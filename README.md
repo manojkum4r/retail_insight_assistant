@@ -1,156 +1,106 @@
-Retail Insights Assistant
-GenAI + Multi-Agent Retail Analytics System
+This project implements an intelligent **Retail Insights Assistant** capable of ingesting multi-source retail datasets, generating automated business summaries, and answering ad-hoc analytical questions through natural-language queries.
 
-This project implements an intelligent Retail Insights Assistant capable of ingesting multi-source retail datasets, generating automated business summaries, and answering ad-hoc analytical questions through natural-language queries.
+It demonstrates the use of **LLM-based agents**, **DuckDB**, **Streamlit**, and a unified multi-dataset data model, with an architecture designed to scale beyond 100GB+ of historical retail data.
 
-It demonstrates the use of LLM-based agents, DuckDB, Streamlit, and a unified multi-dataset data model, with an architecture designed to scale beyond 100GB+ of historical retail data.
+---
 
-1. Features
-Two Primary Modes
-Summarization Mode
+## 🌟 Features
 
-Generates detailed inventory or sales summaries
+The system operates in two primary modes:
 
-Computes metrics, distributions, and category/SKU-level insights
+### 1. Summarization Mode (Auto-Analytics)
+* Generates detailed **inventory or sales summaries**.
+* Computes key **metrics**, **distributions**, and category/SKU-level insights.
+* **Auto-detects dataset type** upon upload.
+* Renders dynamic **charts**, **tables**, and key statistics.
 
-Auto-detects dataset type
+### 2. Conversational Q&A Mode (Natural Language Analytics)
+* Answers **natural-language queries** (e.g., "What was the total revenue last month?").
+* Automatic **intent recognition** and LLM-generated **query plan**.
+* **DuckDB** executes the resulting SQL with full **provenance**.
+* LLM validates, formats, and generates the final, polished insight.
+* Supports a dropdown of **default questions** and **free-form text queries**.
 
-Renders charts + tables + statistics
+---
 
-Conversational Q&A Mode
+## 🤖 Multi-Agent Architecture
 
-Natural-language queries
+The core functionality is powered by three specialized, cooperative LLM-based agents:
 
-Automatic intent recognition
+| Agent | Role | Key Functions |
+| :--- | :--- | :--- |
+| **Language-to-Query Agent** | **Planner** | Converts user questions into structured **JSON plans** (metrics, dimensions, filters). Produces SQL templates using schema-mapping. |
+| **Data Extraction Agent** | **Executor** | Builds **safe SQL** for DuckDB. Auto-repairs missing/incorrect columns. Executes the query and returns dataframes. Prevents binder errors. |
+| **Validation Agent** | **Summarizer** | Runs **data sanity checks** (negative/missing values). Generates the final, polished insight with a **confidence score** and explanation. |
 
-LLM generates query plan
 
-DuckDB executes SQL with provenance
 
-LLM validates and formats final insight
+---
 
-Dropdown of default questions + free-form text queries
+## 🗄️ Dataset Coverage and Canonical Model
 
-2. Multi-Agent Architecture
+The system unifies multiple diverse retail CSVs into a coherent, queryable data model using DuckDB.
 
-The system uses three core agents:
+### Unified Datasets
 
-Language-to-Query Agent
+| File | Role |
+| :--- | :--- |
+| `Amazon Sale Report.csv` | Transactional sales (revenue, qty, dates) |
+| `International sale Report.csv` | Transactional sales (revenue, qty) |
+| `Sale Report.csv` | Inventory (stock, category, size, color) |
+| `May-2022.csv` | SKU pricing master |
+| `P L March 2021.csv` | Product master / pricing |
+| `Expense IIGF.csv` | Expense ledger |
+| `Cloud Warehouse Comparison.csv` | Metadata / reference |
 
-Converts user questions into structured JSON plans
+### Canonical Data Model
 
-Identifies metrics, dimensions, filters, and time windows
+The raw data is normalized into four core virtual tables:
 
-Produces SQL templates using schema-mapping
+* `sales_transactions`: `date`, `sku`, `category`, `qty`, `revenue`, `source`
+* `inventory`: `sku`, `stock`, `category`, `size`, `color`
+* `product_master`: `sku`, `mrp`, `tp`, `category`
+* `expenses`: `date`, `amount`, `type`
 
-Powered by an LLM (OpenAI or mock)
+---
 
-Data Extraction Agent
+## 🛠️ Project Structure
 
-Builds safe SQL for DuckDB
+retail_insights_assistant/ │ ├── app.py # Streamlit UI interface │ ├── agents/ │ ├── lang_to_query.py # LLM agent for query planning (JSON) │ ├── data_extractor.py # SQL builder + DuckDB execution interface │ └── validator.py # LLM agent for validation and summarization │ ├── core/ │ ├── duckdb_executor.py │ ├── llm_client.py │ ├── summary_utils.py # Detailed summary generation logic │ ├── vector_store.py │ └── prompt_templates.py # All LLM prompts │ └── utils/ └── schema_mapper.py # Auto-detection and mapping of column names
 
-Auto-repairs missing or incorrect columns
 
-Executes the query and returns dataframes
+---
 
-Prevents binder errors and invalid SQL
+## ⚙️ Installation & Setup
 
-Validation Agent
+### Prerequisites
+* **Python 3.9+**
+* `pip`
+* OpenAI API key (Optional; a mock LLM works offline)
 
-Runs data sanity checks
-
-Detects negative or missing values
-
-Generates final polished insight
-
-Produces confidence scores and explanations
-
-3. Dataset Coverage (Multiple CSVs Unified)
-
-The system merges and understands multiple files:
-
-File	Role
-Amazon Sale Report.csv	Transactional sales (revenue, qty, dates)
-International sale Report.csv	Transactional sales (revenue, qty)
-Sale Report.csv	Inventory (stock, category, size, color)
-May-2022.csv	SKU pricing master
-P L March 2021.csv	Product master / pricing
-Expense IIGF.csv	Expense ledger
-Cloud Warehouse Comparison.csv	Metadata / reference
-
-These are normalized into a canonical data model:
-
-sales_transactions
-date, sku, category, qty, revenue, source
-
-inventory
-sku, stock, category, size, color
-
-product_master
-sku, mrp, tp, category
-
-expenses
-date, amount, type
-
-4. Project Structure
-retail_insights_assistant/
-│
-├── app.py                     # Streamlit UI
-│
-├── agents/
-│   ├── lang_to_query.py       # LLM agent for query planning
-│   ├── data_extractor.py      # SQL builder + DuckDB executor interface
-│   └── validator.py           # LLM agent for validation and summarization
-│
-├── core/
-│   ├── duckdb_executor.py
-│   ├── llm_client.py
-│   ├── summary_utils.py       # Detailed summary generator
-│   ├── vector_store.py
-│   └── prompt_templates.py
-│
-├── utils/
-│   └── schema_mapper.py       # Auto-detection of column names
-│
-├── docs/
-│   ├── architecture.pdf
-│   └── screenshots.zip
-│
-└── README.md
-
-5. Installation & Setup
-Prerequisites
-
-Python 3.9+
-
-pip
-
-OpenAI API key (optional; mock LLM works offline)
-
-Install Dependencies
+### 1. Install Dependencies
+```bash
 pip install -r requirements.txt
+2. Set API Key (Optional)
+Create a file named .env in the project root and add your OpenAI key:
 
-Set API Key (optional)
-
-Create a .env file:
+Ini, TOML
 
 OPENAI_API_KEY=your_key_here
+3. Run the Application
+Bash
 
-Run the Application
 streamlit run app.py
+Access
+Open your web browser and navigate to: http://localhost:8501
 
-
-Access at:
-http://localhost:8501
-
-6. Usage Guide
+🚀 Usage Guide
 A) Summarization Mode
+Upload any supported retail CSV file (sales, inventory, pricing, or expense).
 
-Upload any retail CSV (sales, inventory, pricing, expense)
+The system will auto-detect the file type.
 
-System auto-detects file type
-
-Generates:
+The output includes:
 
 Key metrics
 
@@ -158,141 +108,49 @@ Missing value analysis
 
 Category and SKU distributions
 
-Stock statistics
-
-Charts (bar charts, histograms, SKU/category charts)
+Charts (bar charts, histograms, etc.)
 
 B) Conversational Q&A Mode
+Use the default dropdown questions or type your own free-form query.
 
-Use default dropdown questions or type your own.
-
-Default Questions Included
+Default Questions Included (Inventory Focus):
 
 Which category has the highest stock?
 
 List top 10 SKUs by stock quantity.
 
-How many unique SKUs are in inventory?
+Provide an ABC analysis suggestion based on stock quantity.
 
 Which categories have zero stock items?
 
 Show stock distribution summary (min, max, median, mean).
 
-Which sizes have the most SKUs?
+Sample Output: | Element | Description | | :--- | :--- | | Key Insight | Category: Kurta had the highest revenue. | | Detailed Table | Tabular results matching the query. | | Confidence | High | | SQL Provenance | The exact SQL query executed by DuckDB. |
 
-Which colors are most common in inventory?
+⚖️ Scaling to 100GB+ Architecture
+The system is designed with a roadmap for big data scalability by leveraging best-in-class data engineering practices:
 
-Which SKUs have the lowest stock (bottom 20)?
+Data Engineering: Use PySpark/Databricks for ingestion, converting raw CSVs to partitioned Parquet.
 
-How many items have missing category or color?
+Storage: S3/ADLS/GCS Data Lake utilizing Delta Lake or Iceberg for ACID transactions.
 
-Provide an ABC analysis suggestion based on stock quantity.
+Indexing & Retrieval: Metadata indexing, Vector search (for semantic filters/RAG), and Pre-aggregated summary tables.
 
-Results include:
+Compute Engine: DuckDB / Trino with Pushdown filters and Parquet partition skipping for massive data reduction.
 
-Key insight
+Performance & Cost Optimization
+Hybrid LLM Strategy: Small model for parsing, large model for summarization.
 
-Detailed table
+Caching: Prompt and SQL result caching (e.g., Redis).
 
-Confidence label
+Optimization: Column pruning, projection pushdown, and minimized token usage via structured prompts.
 
-SQL used for execution
+📢 Additional Project: Voice Assistant
+A separate, complementary repository demonstrating multimodal, real-time AI agent capability:
 
-7. Scaling to 100GB+ Architecture
-Data Engineering
+Voice Assistant Repository: https://github.com/manojkum4r/voice_assistant
 
-Use PySpark / Databricks for ingestion
+Capabilities include Real-time STT, TTS, LLM, Telephony/WebRTC connectors, and multi-agent pipelines in an event-driven architecture.
 
-Convert raw CSV to partitioned Parquet
-
-Partition keys: year, month, region, category
-
-Automated schema validation
-
-Storage
-
-S3 / ADLS / GCS Data Lake (raw + clean + curated zones)
-
-Delta Lake or Iceberg for ACID transactions
-
-BigQuery / Snowflake for analytical workloads
-
-Indexing & Retrieval
-
-Metadata indexing: min/max stats
-
-Vector search for semantic filters
-
-RAG for contextual retrieval
-
-Pre-aggregated summary tables (daily, weekly, monthly)
-
-Compute Engine
-
-DuckDB / Trino for selective reads
-
-Pushdown filters reduce scanned data
-
-Async execution for heavy jobs
-
-8. Performance & Cost Optimization
-
-Hybrid LLM strategy (small model for parsing, large model for summarization)
-
-Prompt and SQL result caching (Redis)
-
-Minimized token usage via structured prompts
-
-Column pruning and projection pushdown
-
-Parquet partition skipping for large datasets
-
-Vector DB only used when required
-
-9. Example Query–Response Flow
-
-User Query
-“Which category saw the highest revenue last month?”
-
-Pipeline
-
-Language Agent →
-{intent: top_n, metric: revenue, dimension: category, time_window: last_month}
-
-Data Extraction Agent → SQL generation and execution
-
-Validation Agent → summary
-
-UI → table + insight + SQL provenance
-
-Sample Output
-
-Category: Kurta
-
-Revenue: 114,339
-
-Confidence: High
-
-SQL: SELECT ... FROM sales_transactions WHERE ...
-
-10. Voice Assistant (Additional Project)
-
-A separate repository demonstrating multimodal, real-time AI agent capability:
-
-Voice Assistant Repository:
-https://github.com/manojkum4r/voice_assistant
-
-Capabilities:
-
-Real-time STT, TTS, LLM
-
-Telephony + WebRTC connectors
-
-Multi-agent pipelines
-
-Event-driven architecture
-
-11. License
-
-This project is released for assessment and demonstration purposes only.
-All data used is sample or anonymized retail data.
+📄 License
+This project is released for assessment and demonstration purposes only. All data used is sample or anonymized retail data.
