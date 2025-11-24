@@ -1,21 +1,92 @@
 # agents/lang_to_query.py
 """
-Language-to-Query Resolution Agent (fixed)
-- Calls LLM for a strict JSON plan.
-- If LLM fails or returns incomplete plan, create a robust fallback plan that includes a safe SQL_template.
+Language-to-Query Resolution Agent (deterministic mapping for default questions + LLM fallback)
+
+- If question matches one of the known default dropdown questions, return a deterministic plan.
+- Otherwise ask the LLM to produce a JSON plan and parse it.
+- Ensures the returned plan contains at least 'intent', 'metrics', 'dimensions', 'filters', 'time_window', and optionally 'sql_template' or 'sql'.
 """
+
 import json
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from core.prompt_templates import TEMPLATE_LANG_TO_QUERY
 from core.llm_client import LLMClient
-from agents.data_extractor import DataExtractionAgent  # to build a safe SQL if needed
+
+# Default question -> structured plan mapping (these correspond to the dropdown defaults)
+# Plans are intentionally simple: they indicate intent, metrics, dimensions and filters.
+# DataExtractionAgent will use these to build safe SQL.
+DEFAULT_QUESTION_MAP = {
+    "Which category has the highest stock?": {
+        "intent": "top_n",
+        "metrics": ["stock"],
+        "dimensions": ["category"],
+        "filters": {}
+    },
+    "List top 10 SKUs by stock quantity.": {
+        "intent": "top_n",
+        "metrics": ["stock"],
+        "dimensions": ["product_id"],
+        "filters": {},
+        "limit": 10
+    },
+    "How many unique SKUs are in inventory?": {
+        "intent": "count_unique",
+        "metrics": ["count"],
+        "dimensions": ["product_id"],
+        "filters": {}
+    },
+    "Which categories have zero stock items?": {
+        "intent": "filter",
+        "metrics": ["stock"],
+        "dimensions": ["category"],
+        "filters": {"stock": {"op": "eq", "value": 0}}
+    },
+    "Show stock distribution summary (min, max, median, mean).": {
+        "intent": "aggregate_stats",
+        "metrics": ["stock"],
+        "dimensions": [],
+        "filters": {}
+    },
+    "Which sizes have the most SKUs?": {
+        "intent": "top_n",
+        "metrics": ["count"],
+        "dimensions": ["size"],
+        "filters": {}
+    },
+    "Which colors are most common in inventory?": {
+        "intent": "top_n",
+        "metrics": ["count"],
+        "dimensions": ["color"],
+        "filters": {}
+    },
+    "Which SKUs have the lowest stock (bottom 20)?": {
+        "intent": "top_n",
+        "metrics": ["stock"],
+        "dimensions": ["product_id"],
+        "filters": {},
+        "order": "asc",
+        "limit": 20
+    },
+    "How many items have missing category or color?": {
+        "intent": "missing_count",
+        "metrics": ["missing"],
+        "dimensions": ["category", "color"],
+        "filters": {}
+    },
+    "Provide an ABC analysis suggestion based on stock quantity.": {
+        "intent": "abc_analysis",
+        "metrics": ["stock"],
+        "dimensions": ["product_id"],
+        "filters": {}
+    }
+}
+
 
 class LanguageToQueryAgent:
-    def __init__(self, llm: LLMClient = None):
+    def __init__(self, llm: Optional[LLMClient] = None):
         self.llm = llm or LLMClient(provider="mock")
-        self._data_builder = DataExtractionAgent()
 
     def parse(self, question: str, schema_map: Dict[str, str], conversation: list = None) -> Dict[str, Any]:
         """
@@ -25,63 +96,124 @@ class LanguageToQueryAgent:
         - dimensions
         - filters
         - time_window
-        - sql (SQL string to execute) OR sql_template (preferred)
-        Ensures 'sql' or 'sql_template' is ALWAYS present by building a safe SQL if LLM does not provide one.
+        - optionally: sql or sql_template
+
+        If the question exactly matches a default known question, return its deterministic plan.
+        Otherwise, call the LLM to generate a plan.
         """
-        plan = {"intent": "unknown", "metrics": [], "dimensions": [], "filters": {}, "time_window": {}, "sql": None, "sql_template": None}
-        # Try LLM-based plan generation
+        question_clean = question.strip()
+
+        # 1) If question matches a default dropdown question, return deterministic plan
+        if question_clean in DEFAULT_QUESTION_MAP:
+            plan = dict(DEFAULT_QUESTION_MAP[question_clean])  # shallow copy
+            # Normalize dimensions to actual schema column names (if available)
+            plan = self._map_plan_columns_to_schema(plan, schema_map)
+            # Ensure mandatory fields
+            plan.setdefault("intent", "unknown")
+            plan.setdefault("metrics", [])
+            plan.setdefault("dimensions", [])
+            plan.setdefault("filters", {})
+            plan.setdefault("time_window", {})
+            # No sql yet — DataExtractionAgent will build safe SQL from this plan
+            return plan
+
+        # 2) Fallback to LLM-based plan generation
         try:
             prompt = TEMPLATE_LANG_TO_QUERY.format(question=question, schema=json.dumps(schema_map))
             response = self.llm.generate_text(prompt)
-            # Extract JSON object if present
-            start = response.find("{")
-            end = response.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                json_blob = response[start:end+1]
-                parsed = json.loads(json_blob)
-                # normalize parsed plan
-                for k in ("intent", "metrics", "dimensions", "filters", "time_window", "sql", "sql_template"):
-                    if k in parsed:
-                        plan[k] = parsed[k]
-                # If sql_template is given as a string, accept it
-                if plan.get("sql_template") and isinstance(plan.get("sql_template"), str):
-                    plan["sql"] = plan["sql_template"]
+            json_blob = self._extract_json(response)
+            parsed = json.loads(json_blob)
+            plan = {}
+            plan["intent"] = parsed.get("intent", "unknown")
+            plan["metrics"] = parsed.get("metrics", [])
+            plan["dimensions"] = parsed.get("dimensions", [])
+            plan["filters"] = parsed.get("filters", {})
+            plan["time_window"] = parsed.get("time_window", {})
+            # Accept sql_template or sql if LLM provided it
+            if parsed.get("sql_template"):
+                plan["sql"] = parsed.get("sql_template")
+                plan["sql_template"] = parsed.get("sql_template")
+            elif parsed.get("sql"):
+                plan["sql"] = parsed.get("sql")
+            # Normalize columns
+            plan = self._map_plan_columns_to_schema(plan, schema_map)
+            return plan
         except Exception:
-            # swallow LLM errors — will fallback below
-            pass
+            # If LLM parsing fails, return a conservative fallback plan using heuristics
+            return self._fallback_plan(question, schema_map)
 
-        # If LLM did not produce any usable SQL, create a safe sql_template using schema_map
-        if not plan.get("sql"):
-            # Build a plan heuristically from the question
-            q = question.lower()
-            if "revenue" in q or "sales" in q or "amount" in q or "gross" in q:
-                plan["intent"] = plan.get("intent","metric_query")
-                plan["metrics"] = plan.get("metrics") or ["revenue"]
-                # prefer category if schema_map has it, else sku
-                dimension = schema_map.get("category") or schema_map.get("product_id") or schema_map.get("product_name")
-                if dimension:
-                    plan["dimensions"] = [dimension]
-                else:
-                    plan["dimensions"] = []
-            elif "stock" in q or "inventory" in q or "stock level" in q:
-                plan["intent"] = "inventory_query"
-                plan["metrics"] = ["stock"]
-                plan["dimensions"] = [schema_map.get("category") or schema_map.get("product_id") or next((v for v in schema_map.values() if v), None)]
-            else:
-                plan["intent"] = "top_n"
-                plan["metrics"] = plan.get("metrics") or ["revenue"]
-                plan["dimensions"] = plan.get("dimensions") or [schema_map.get("category") or schema_map.get("product_id") or next((v for v in schema_map.values() if v), None)]
+    def _extract_json(self, text: str) -> str:
+        # extract first JSON object from text
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("No JSON found in LLM response")
+        return text[start:end+1]
 
-            # now ask the DataExtractionAgent to build a safe SQL for this plan
-            safe_sql = self._data_builder._build_sql(plan, schema_map.get("__source_path__") or "/mnt/data/Sale Report.csv")
-            plan["sql"] = safe_sql
-            plan["sql_template"] = safe_sql
+    def _fallback_plan(self, question: str, schema_map: Dict[str, str]) -> Dict[str, Any]:
+        # Rule-based fallback (simple heuristics)
+        q = question.lower()
+        plan = {"intent": "unknown", "metrics": [], "dimensions": [], "filters": {}, "time_window": {}}
+        if "revenue" in q or "sales" in q:
+            plan["intent"] = "metric_query"
+            plan["metrics"] = ["revenue"]
+            plan["dimensions"] = [schema_map.get("category") or schema_map.get("product_id") or schema_map.get("product_name")]
+        elif "stock" in q or "inventory" in q:
+            plan["intent"] = "metric_query"
+            plan["metrics"] = ["stock"]
+            plan["dimensions"] = [schema_map.get("category") or schema_map.get("product_id")]
+        else:
+            plan["intent"] = "top_n"
+            plan["metrics"] = ["revenue"]
+            plan["dimensions"] = [schema_map.get("category") or schema_map.get("product_id")]
+        # Map to actual schema column names
+        plan = self._map_plan_columns_to_schema(plan, schema_map)
+        return plan
 
-        # Final normalization: ensure SQL placeholders exist (we will replace {path} in extraction)
-        if plan.get("sql") and "{path}" not in plan.get("sql"):
-            # If the sql includes read_csv_auto with a hard-coded path, that's OK.
-            # But to make behavior predictable, if there's no {path}, we can wrap the SQL to use the file path.
-            # We'll keep it as-is.
-            pass
+    def _map_plan_columns_to_schema(self, plan: Dict[str, Any], schema_map: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Replace any logical names in plan['dimensions'] and plan['metrics'] with actual column names
+        based on schema_map. If schema_map doesn't have the mapping, keep the original name.
+        """
+        # map metrics if needed (e.g., 'stock' -> actual column)
+        mapped_metrics = []
+        for m in plan.get("metrics", []):
+            if not m:
+                continue
+            key = m.lower()
+            replacement = None
+            # Common metric logical names -> schema keys
+            if key in ("stock", "units", "quantity", "qty"):
+                replacement = schema_map.get("units_sold") or schema_map.get("units") or schema_map.get("inventory") or schema_map.get("stock")
+            if key in ("revenue", "sales", "amount"):
+                replacement = schema_map.get("revenue") or schema_map.get("amount")
+            if key in ("count", "unique", "distinct"):
+                replacement = None  # count doesn't map to a single column
+            # fallback: if we got a direct mapping in schema_map
+            if not replacement and schema_map.get(m):
+                replacement = schema_map.get(m)
+            mapped_metrics.append(replacement or m)
+        plan["metrics"] = mapped_metrics
 
+        # map dimensions
+        mapped_dims = []
+        for d in plan.get("dimensions", []):
+            if not d:
+                continue
+            # Try to map common logical dimension names to schema_map
+            key = d.lower()
+            replacement = None
+            if key in ("category", "product_category"):
+                replacement = schema_map.get("category")
+            if key in ("product_id", "sku", "sku code", "sku_code"):
+                replacement = schema_map.get("product_id") or schema_map.get("product_id")  # preserve
+            if key in ("size",):
+                replacement = schema_map.get("size")
+            if key in ("color",):
+                replacement = schema_map.get("color")
+            # fallback direct mapping
+            if not replacement and schema_map.get(d):
+                replacement = schema_map.get(d)
+            mapped_dims.append(replacement or d)
+        plan["dimensions"] = mapped_dims
         return plan
